@@ -19,6 +19,26 @@ type ContentType struct {
 	Fields map[string]map[string]string
 }
 
+type Kekclass struct {
+	ID uuid.UUID
+	fields map[string]interface{}
+}
+
+type Kek struct {
+	Space Kekspace
+	Kuid uuid.UUID
+	Class Kekclass
+}
+
+type Kekspace struct {
+	Author map[string]string
+	Group Kekgroup
+}
+
+type Kekgroup struct {
+
+}
+
 func main() {
 	out, err := exec.Command("date").Output()
 	argsWithoutProg := os.Args[1:]
@@ -58,7 +78,7 @@ func Init(args []string) {
 	os.Mkdir(".kek", 0755)
 	conf := make(map[string]string)
 	kekname, _ := csrf.RandomString(9)
-	conf["kekname"] = kekname
+	conf["kekspace"] = kekname
 	conf["kuid"] = uuid.NewV4().String()
 
 	for k, v := range args {
@@ -81,8 +101,7 @@ func Init(args []string) {
 		}
 	}
 
-	cdata, e := json.Marshal(conf)
-	log.Print(e)
+	cdata, _ := json.Marshal(conf)
 	ioutil.WriteFile(".kek/config", cdata, 0755)
 }
 
@@ -173,7 +192,6 @@ func GetCollection(kClass string) []string  {
 func GetItems(items []map[string]string) {
 	list := make([][]byte, len(items))
 	i := 0
-
 	for _, it := range items {
 		for k, v := range it {
 			fi, _ := ioutil.ReadFile(".kek/" + k + "/" + v)
@@ -181,7 +199,6 @@ func GetItems(items []map[string]string) {
 			i++
 		}
 	}
-
 }
 
 func GetConfContent() map[string]string {
@@ -190,23 +207,5 @@ func GetConfContent() map[string]string {
 	json.Unmarshal(conf, cdata)
 
 	return cdata
-}
-
-func Run(command string, args ...string) {
-	var cmd *exec.Cmd
-	if len(args) == 0 {
-		fmt.Printf("run: %s\n", command)
-		args := strings.Split(command, " ")
-		cmd = exec.Command(args[0], args[1:]...)
-	} else {
-		fmt.Printf("run: %s %s\n", command, strings.Join(args, " "))
-		cmd = exec.Command(command, args...)
-	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Printf("command failed: %s\n", command)
-		panic(err)
-	}
 }
 
