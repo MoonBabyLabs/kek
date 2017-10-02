@@ -1,48 +1,61 @@
 package main
 
 import (
-	"fmt"
-	"os/exec"
-	"log"
-	"strings"
-	"os"
-	"io/ioutil"
-	"encoding/json"
-	"github.com/satori/go.uuid"
-	"github.com/revel/modules/csrf/app"
-	"time"
 	"bytes"
 	"encoding/gob"
+	"encoding/json"
+	"errors"
+	"github.com/MoonBabyLabs/revchain"
+	"github.com/revel/modules/csrf/app"
+	"github.com/satori/go.uuid"
+	"io/ioutil"
+	"log"
+	"os"
+	"strings"
+	"time"
 )
 
-type ContentType struct {
-	Fields map[string]map[string]string
+
+type KekField struct {
+	Required bool
+	Name     string
+	Default  interface{}
+	Type     string
 }
 
-type Kekclass struct {
-	ID uuid.UUID
-	fields map[string]interface{}
+type KekDoc struct {
+	Id         uuid.UUID
+	Attributes map[string]interface{}
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	*revchain.Chain
+	Kekspace   Kekspace
+	Kekclasses []Kekclass
+	Related    []KekDoc
 }
 
-type Kek struct {
-	Space Kekspace
-	Kuid uuid.UUID
-	Class Kekclass
+
+type Contact struct {
+	FirstName  string
+	LastName   string
+	Email      string
+	Phone      string
+	Id         string
+	City       string
+	Region     string
+	PostalCode string
+	Country    string
 }
 
-type Kekspace struct {
-	Author map[string]string
-	Group Kekgroup
+func GetKekDoc(id uuid.UUID, withRevs bool) (KekDoc, error) {
+	kek := KekDoc{}
+
+	return kek, nil
 }
 
-type Kekgroup struct {
-
-}
 
 func main() {
-	out, err := exec.Command("date").Output()
 	argsWithoutProg := os.Args[1:]
-
 	fa := argsWithoutProg[0]
 	log.Print(fa)
 
@@ -58,60 +71,66 @@ func main() {
 		Get(argsWithoutProg)
 		break
 	}
-
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("The date is %s\n", out)
 }
 
-func Get(args []string) {
+func Get(args []string) (interface{}, error) {
 	tp := args[1]
+	uid, uidErr := uuid.FromString(args[2])
+
+	if uidErr != nil {
+		return uid, uidErr
+	}
 
 	switch tp {
-	case "collection":
-		fmt.Printf("Content is : %s\n", GetCollection(args[2]))
+	case "class":
+		kClass, kErr := GetKekClass(uid, true, true)
+
+		return kClass, kErr
+
+		break
+	case "doc":
+		kDoc, kErr := GetKekDoc(uid, true)
+
+		return kDoc, kErr
+		break
 	}
+
+	return nil, errors.New("need to follow format: kek get [class or doc]")
 }
 
 func Init(args []string) {
 	os.Mkdir(".kek", 0755)
-	conf := make(map[string]string)
+	kspace := Kekspace{}
 	kekname, _ := csrf.RandomString(9)
-	conf["kekspace"] = kekname
-	conf["kuid"] = uuid.NewV4().String()
+	kspace.Name = kekname
+	kspace.Id = uuid.NewV4()
+	kspace.Owners = make([]Contact, 1)
 
 	for k, v := range args {
 		if v == "-name" {
-			conf["kekname"] = args[k+1]
+			kspace.Name = args[k+1]
 		} else if v == "-owner.email" {
-			conf["owner.email"] = args[k+1]
+			kspace.Owners[0].Email = args[k+1]
 		} else if v == "-owner.phone" {
-			conf["owner.phone"] = args[k+1]
-		}else if v == "-owner.first_name" {
-			conf["owner.first_name"] = args[k+1]
+			kspace.Owners[0].Phone = args[k+1]
+		} else if v == "-owner.first_name" {
+			kspace.Owners[0].FirstName = args[k+1]
 		} else if v == "-owner.last_name" {
-			conf["owner.last_name"] = args[k+1]
-		} else if v == "-company.name" {
-			conf["company.name"] = args[k+1]
-		} else if v == "-company.email" {
-			conf["company.email"] = args[k+1]
-		} else if v == "-company.phone" {
-			conf["company.phone"] = args[k+1]
+			kspace.Owners[0].LastName = args[k+1]
 		}
 	}
 
-	cdata, _ := json.Marshal(conf)
-	ioutil.WriteFile(".kek/config", cdata, 0755)
+	cdata, _ := json.Marshal(kspace)
+	ioutil.WriteFile(".kek/space", cdata, 0755)
 }
 
 func Add(args []string) {
 	contents := make(map[string]interface{})
 
-	for k, v :=range args{
+	for k, v := range args {
 		if strings.Contains(v, "-file") {
-			f := args[k + 1]
-			cnts, _ :=ioutil.ReadFile(f)
+			f := args[k+1]
+			cnts, _ := ioutil.ReadFile(f)
 			json.Unmarshal(cnts, contents)
 			log.Print(contents)
 		}
@@ -127,34 +146,32 @@ func Add(args []string) {
 }
 
 func AddClass(name string, details []string) {
-	ct := ContentType{}
-	log.Print(name, details)
+	ct := Kekclass{}
 	fileCont := make([]byte, 0)
 	cdata := GetConfContent()
 	kcMap := make(map[interface{}]interface{})
 	kcData, _ := ioutil.ReadFile(".kek/classmap")
 
-
 	for k, arg := range details {
 		if arg == "-file" {
-			fileArg := k+1
+			fileArg := k + 1
 			fileCont, _ := ioutil.ReadFile(details[fileArg])
 			json.Unmarshal(fileCont, ct.Fields)
 		}
 	}
-	tp := uuid.NewV5(uuid.NamespaceDNS, cdata["kuid"] + "/" + name)
+	tp := uuid.NewV5(uuid.NamespaceDNS, cdata["kuid"]+"/"+name)
 	kcMap[name] = kcMap
 	kcb, _ := GetBytes(kcMap)
 	kcData = append(kcData, kcb...)
-	os.Mkdir(".kek/" + tp.String(), 0755)
+	os.Mkdir(".kek/"+tp.String(), 0755)
 	ioutil.WriteFile(".kek/classmap", kcData, 0755)
-	ioutil.WriteFile(".kek/types/" + tp.String(), fileCont, 0755)
+	ioutil.WriteFile(".kek/types/"+tp.String(), fileCont, 0755)
 }
 
 func AddItem(name string, cType string, data map[string]interface{}) {
 	cdata := GetConfContent()
 	log.Print(name, cType, data)
-	tpUid := uuid.NewV5(uuid.NamespaceDNS, cdata["kuid"] + "/" + cType)
+	tpUid := uuid.NewV5(uuid.NamespaceDNS, cdata["kuid"]+"/"+cType)
 	cuid := uuid.NewV5(tpUid, name)
 	data["_kekspace"] = cdata["kuid"]
 	data["_kekclass"] = tpUid.String()
@@ -164,10 +181,10 @@ func AddItem(name string, cType string, data map[string]interface{}) {
 	js, _ := json.Marshal(data)
 	log.Print(data)
 	log.Print(string(js[:]))
-	ioutil.WriteFile(".kek/" + tpUid.String() + "/" + cuid.String(), js, 0755)
+	ioutil.WriteFile(".kek/"+tpUid.String()+"/"+cuid.String(), js, 0755)
 }
 
-func GetBytes(key map[interface]interface{}) ([]byte, error) {
+func GetBytes(key map[interface{}]interface{}) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
 	err := enc.Encode(key)
@@ -177,7 +194,7 @@ func GetBytes(key map[interface]interface{}) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func GetCollection(kClass string) []string  {
+func GetCollection(kClass string) []string {
 	keks, _ := ioutil.ReadDir(".kek/" + kClass)
 	list := make([]string, len(keks))
 
@@ -208,4 +225,3 @@ func GetConfContent() map[string]string {
 
 	return cdata
 }
-
