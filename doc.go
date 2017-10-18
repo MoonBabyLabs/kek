@@ -1,4 +1,4 @@
-package service
+package kek
 
 import (
 	"time"
@@ -6,8 +6,9 @@ import (
 	"github.com/satori/go.uuid"
 	"encoding/json"
 	"strconv"
-	"errors"
 	"sort"
+	"strings"
+	"github.com/rs/xid"
 )
 
 
@@ -29,13 +30,12 @@ type DocQuery struct {
 }
 
 type KekDoc struct {
-	Id         string
-	Attributes map[string]interface{}
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	revchain.Chain
-	Related    []KekDoc
-	Revision string
+	Id         string `json:"id"`
+	Attributes map[string]interface{} `json:"attributes"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	revchain.Chain `json:"revisions"`
+	Revision string `json:"rev"`
 }
 
 func (kd KekDoc) Get(id string, withRevChain bool) (KekDoc, error) {
@@ -57,15 +57,14 @@ func (kd KekDoc) Get(id string, withRevChain bool) (KekDoc, error) {
 // New will create a kekdoc, index the field attributes, map the classes & start the revision chain
 func (kd KekDoc) New(attrs map[string]interface{}) (KekDoc, error) {
 	ks := Kekspace{}
-	_, ksLoadErr := Load(KEK_SPACE_CONFIG, ks)
+	_, ksLoadErr := Load(KEK_SPACE_CONFIG, &ks)
 
 	if ksLoadErr != nil {
 		return kd, ksLoadErr
 	}
 
 	nowTime := time.Now()
-	cuid := uuid.NewV5(ks.Id, nowTime.String())
-	kd.Id = strconv.FormatInt(nowTime.Unix(), 10) + "." + cuid.String()
+	kd.Id = "dd" + xid.New().String()
 	kd.CreatedAt = nowTime
 	kd.UpdatedAt = nowTime
 	kd.Attributes = attrs
@@ -208,12 +207,19 @@ func indexAttrs (id string, data map[string]interface{}) {
 
 // Find a kekdocument based on a DocQuery. The DocQuery must have a searchQuery as well.
 func (kc KekDoc) Find(q DocQuery) ([]KekDoc, error) {
-	finalDocs := make([]KekDoc, 0)
 	docIds := make(map[string]int)
 	limit := q.Limit
 
 	if len(q.SearchQueries) == 0 {
-		return finalDocs, errors.New("Need to have searchQueries in order to find docs")
+		if limit < 1 {
+			limit = 20
+		}
+		docFiles, _ := List(DOC_DIR, limit)
+		for docId, _ := range docFiles {
+			if !strings.Contains(docId, ".rev") {
+				docIds[docId] = 1
+			}
+		}
 	} else {
 		docs := make(map[string]bool)
 
