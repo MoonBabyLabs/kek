@@ -32,7 +32,9 @@ func Save(kekLocale string, content interface{}) error {
 
 func Delete(locale string) error {
 	homeDir, _ := homedir.Dir()
-	return os.Remove(homeDir + KEK_DIR + locale)
+	err := os.Remove(homeDir + KEK_DIR + locale)
+
+	return err
 }
 
 func Load(locale string, unmarshallStruct interface{}) (interface{}, error) {
@@ -43,7 +45,7 @@ func Load(locale string, unmarshallStruct interface{}) (interface{}, error) {
 		return unmarshallStruct, readErr
 	}
 
-	json.Unmarshal(file, unmarshallStruct)
+	json.Unmarshal(file, &unmarshallStruct)
 
 	return unmarshallStruct, nil
 }

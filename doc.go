@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 	"github.com/rs/xid"
+	"log"
 )
-
 
 type SearchQuery struct {
 	Operator string
@@ -47,7 +47,7 @@ func (kd KekDoc) Get(id string, withRevChain bool) (KekDoc, error) {
 
 	if withRevChain {
 		rchain := revchain.Chain{}
-		Load(DOC_DIR + id + ".rev", &rchain)
+		Load(DOC_DIR + id + ".kek", &rchain)
 		kd.Chain = rchain
 	}
 
@@ -56,39 +56,46 @@ func (kd KekDoc) Get(id string, withRevChain bool) (KekDoc, error) {
 
 // New will create a kekdoc, index the field attributes, map the classes & start the revision chain
 func (kd KekDoc) New(attrs map[string]interface{}) (KekDoc, error) {
+	kd.Id = "dd" + xid.New().String()
+	// Lets index our fields
+	go func() {
+		indexAttrs(kd.Id, attrs)
+	}()
+
 	ks := Kekspace{}
 	_, ksLoadErr := Load(KEK_SPACE_CONFIG, &ks)
+	log.Print(ks)
 
 	if ksLoadErr != nil {
 		return kd, ksLoadErr
 	}
 
 	nowTime := time.Now()
-	kd.Id = "dd" + xid.New().String()
 	kd.CreatedAt = nowTime
 	kd.UpdatedAt = nowTime
 	kd.Attributes = attrs
-	js, _ := json.Marshal(attrs)
-	blck := revchain.Block{}.New(ks, js, "", 0)
+	blck := revchain.Block{}.New(ks, attrs, "", -1)
 	kd.Revision = blck.HashString()
 	Save(DOC_DIR + kd.Id, kd)
 	kd.Chain = revchain.Chain{}.New(blck)
-	Save(DOC_DIR + kd.Id + ".rev", kd.Chain)
+	Save(DOC_DIR + kd.Id + ".kek", kd.Chain)
 
-	// Lets index our fields
-	indexAttrs(kd.Id, attrs)
 
 	return kd, nil
 }
 
 func (kd KekDoc) Update(id string, attrs map[string]interface{}, patch bool) (KekDoc, error) {
 	Load(DOC_DIR + id, &kd)
+	kd.UpdatedAt = time.Now()
 	chain := revchain.Chain{}
 	block := revchain.Block{}
 	ks := Kekspace{}
 	Load (KEK_SPACE_CONFIG, &ks)
-	Load(DOC_DIR + id + ".rev", &chain)
-	kd.removeAttrs()
+	Load(DOC_DIR + id + ".kek", &chain)
+
+	go func() {
+		kd.removeAttrs()
+	}()
 
 	if patch {
 		for key, val := range attrs {
@@ -106,9 +113,9 @@ func (kd KekDoc) Update(id string, attrs map[string]interface{}, patch bool) (Ke
 
 	data, _ := json.Marshal(attrs)
 	lastBlock := chain.GetLast()
-	block.New(ks, data, lastBlock.HashString(), lastBlock.Index + 1)
+	block.New(ks, data, lastBlock.HashString(), lastBlock.Index)
 	chain.AddBlock(block)
-	Save(DOC_DIR + id + ".rev", chain)
+	Save(DOC_DIR + id + ".kek", chain)
 
 	return kd, nil
 }
@@ -121,47 +128,78 @@ func (kd KekDoc) Delete(id string) error {
 		return err
 	}
 
-	kd.removeAttrs()
-	Delete (DOC_DIR + id + ".rev")
-	return Delete(DOC_DIR + id)
+	delRev := make(chan error, 3)
+
+	go func() {
+		delRev <- kd.removeAttrs()
+	}()
+	go func() {
+		delRev <- Delete(DOC_DIR + id + ".kek")
+	}()
+	go func() {
+		delRev <- Delete(DOC_DIR + id)
+	}()
+
+	for i := 0; i < len(delRev); i++ {
+		select {
+		case del := <-delRev:
+			if del != nil {
+				return del
+			}
+		}
+	}
+
+	return nil
 }
 
 // removeAttrs will remove all of the indexed attributed for a Kekdoc
 // @todo removeAttrs should remove deep indexes when functionality is added.
-func (kd KekDoc) removeAttrs() {
-	for attr, val := range kd.Attributes {
-		strVal, isStr := val.(string)
+func (kd KekDoc) removeAttrs() error {
+	deletedAttrs := make(chan error, len(kd.Attributes))
 
-		if isStr {
-			Delete(FIELD_DIR + attr + "/" + strVal + "/" + kd.Id)
-		}
+	for attr, _ := range kd.Attributes {
+		val := kd.Attributes[attr]
+		go func() {
+			strVal, isStr := val.(string)
 
-		valInt, isInt := val.(int)
-
-		if isInt {
-			Delete(FIELD_DIR + attr + "/" + strconv.Itoa(valInt) + "/" + kd.Id)
-		}
-
-		strSlice, isStrSlice := val.([]string)
-
-		if isStrSlice {
-			for _, val := range strSlice {
-				Delete(FIELD_DIR + attr + "/" + val + "/" + kd.Id)
+			if isStr {
+				deletedAttrs <- Delete(FIELD_DIR + attr + "/" + strVal + "/" + kd.Id)
 			}
 
-			continue
-		}
+			valInt, isInt := val.(int)
 
-		intSlice, isIntSlice := val.([]int)
-
-		if  isIntSlice {
-			for _, val := range intSlice {
-				Delete(FIELD_DIR + attr + "/" + strconv.Itoa(val) + "/" + kd.Id)
+			if isInt {
+				deletedAttrs <- Delete(FIELD_DIR + attr + "/" + strconv.Itoa(valInt) + "/" + kd.Id)
 			}
 
-			continue
+			strSlice, isStrSlice := val.([]string)
+
+			if isStrSlice {
+				for _, val := range strSlice {
+					go Delete(FIELD_DIR + attr + "/" + val + "/" + kd.Id)
+				}
+			}
+
+			intSlice, isIntSlice := val.([]int)
+
+			if  isIntSlice {
+				for _, val := range intSlice {
+					deletedAttrs <- Delete(FIELD_DIR + attr + "/" + strconv.Itoa(val) + "/" + kd.Id)
+				}
+			}
+		}()
+	}
+
+	for range kd.Attributes {
+		select {
+		case deleted:= <-deletedAttrs:
+			if deleted != nil {
+				return deleted
+			}
 		}
 	}
+
+	return <- deletedAttrs
 }
 
 // indexAttrs will add all of the attribute indexes for a kekdoc.
@@ -216,7 +254,7 @@ func (kc KekDoc) Find(q DocQuery) ([]KekDoc, error) {
 		}
 		docFiles, _ := List(DOC_DIR, limit)
 		for docId, _ := range docFiles {
-			if !strings.Contains(docId, ".rev") {
+			if !strings.Contains(docId, ".kek") {
 				docIds[docId] = 1
 			}
 		}

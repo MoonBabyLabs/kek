@@ -19,7 +19,7 @@ type Kekspace struct {
 }
 
 func (ks Kekspace) Load() (Kekspace, error) {
-	_, err := Load(KEK_SPACE_CONFIG, ks)
+	_, err := Load(KEK_SPACE_CONFIG, &ks)
 
 	if err != nil {
 		return ks, err
