@@ -14,6 +14,7 @@ const FIELD_DIR = "f/"
 const KEK_DIR = "/.kek/"
 
 
+// Deprecated as you should be using the kek.store{}.Save method
 func Save(kekLocale string, content interface{}) error {
 	marshallData, err := json.Marshal(content)
 
@@ -30,6 +31,7 @@ func Save(kekLocale string, content interface{}) error {
 	return ioutil.WriteFile(homeDir + KEK_DIR + kekLocale, marshallData, 0755)
 }
 
+// Deprecated as you should be using the kek.store{}.Delete method
 func Delete(locale string) error {
 	homeDir, _ := homedir.Dir()
 	err := os.Remove(homeDir + KEK_DIR + locale)
@@ -37,6 +39,7 @@ func Delete(locale string) error {
 	return err
 }
 
+// Deprecated as you should be using the kek.store{}.Load method
 func Load(locale string, unmarshallStruct interface{}) (interface{}, error) {
 	homeDir, _ := homedir.Dir()
 	file, readErr := ioutil.ReadFile(homeDir + KEK_DIR + locale)
@@ -50,6 +53,7 @@ func Load(locale string, unmarshallStruct interface{}) (interface{}, error) {
 	return unmarshallStruct, nil
 }
 
+// Deprecated as you should use kek.store{}.List()
 func List(locale string, limit int) (map[string]bool, error) {
 	homeDir, _ := homedir.Dir()
 	listItems, err := ioutil.ReadDir(homeDir + KEK_DIR + locale)
