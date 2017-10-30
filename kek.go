@@ -8,7 +8,6 @@ import (
 	"github.com/mitchellh/go-homedir"
 )
 
-const KEK_SPACE_CONFIG = "space"
 const DOC_DIR = "d/"
 const FIELD_DIR = "f/"
 const KEK_DIR = "/.kek/"

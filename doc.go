@@ -4,11 +4,10 @@ import (
 	"time"
 	"github.com/MoonBabyLabs/revchain"
 	"github.com/satori/go.uuid"
-	"encoding/json"
 	"strconv"
 	"sort"
-	"strings"
 	"github.com/rs/xid"
+	"github.com/MoonBabyLabs/kekstore"
 )
 
 type SearchQuery struct {
@@ -29,20 +28,20 @@ type DocQuery struct {
 }
 
 type Doc struct {
-	store	Storer
+	store	kekstore.Storer
 	Id         string `json:"id"`
 	Attributes map[string]interface{} `json:"attributes"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
-	revchain.Chain `json:"revisions"`
-	Revision string `json:"rev"`
+	Revisions revchain.ChainMaker `json:"revisions"`
+	Rev string `json:"rev"`
 }
 
-func (kd Doc) Store() Storer {
+func (kd Doc) Store() kekstore.Storer {
 	return kd.store
 }
 
-func (kd Doc) SetStore(store Storer) Doc {
+func (kd Doc) SetStore(store kekstore.Storer) Doc {
 	kd.store = store
 
 	return kd
@@ -50,7 +49,7 @@ func (kd Doc) SetStore(store Storer) Doc {
 
 func (kd Doc) Get(id string, withRevChain bool) (Doc, error) {
 	if kd.store == nil {
-		kd.store = Store{}
+		kd.store = kekstore.Store{}
 	}
 
 	kerr := kd.store.Load(DOC_DIR + id, &kd)
@@ -60,9 +59,23 @@ func (kd Doc) Get(id string, withRevChain bool) (Doc, error) {
 	}
 
 	if withRevChain {
-		rchain := revchain.Chain{}
-		kd.store.Load(DOC_DIR + id + ".kek", &rchain)
-		kd.Chain = rchain
+		if kd.Revisions == nil {
+			rev, revErr := revchain.Chain{}.SetStore(kd.Store()).Load(kd.Id)
+
+			if revErr != nil {
+				return kd, revErr
+			}
+
+			kd.Revisions = rev
+		} else {
+			rev, revErr := kd.Revisions.Load(kd.Id)
+
+			if revErr != nil {
+				return kd, revErr
+			}
+
+			kd.Revisions = rev
+		}
 	}
 
 	return kd, nil
@@ -70,8 +83,8 @@ func (kd Doc) Get(id string, withRevChain bool) (Doc, error) {
 
 // New will create a kekdoc, index the field attributes, map the classes & start the revision chain
 func (kd Doc) New(attrs map[string]interface{}) (Doc, error) {
-	if kd.store != nil {
-		kd.store = Store{}
+	if kd.store == nil {
+		kd.store = kekstore.Store{}
 	}
 
 	kd.Id = "dd" + xid.New().String()
@@ -81,40 +94,61 @@ func (kd Doc) New(attrs map[string]interface{}) (Doc, error) {
 		indDone <- kd.indexAttrs(kd.Id, attrs)
 	}()
 
-	ks := Kekspace{}
-	ksLoadErr := kd.store.Load(KEK_SPACE_CONFIG, &ks)
-
-	if ksLoadErr != nil {
-		return kd, ksLoadErr
-	}
-
 	nowTime := time.Now()
 	kd.CreatedAt = nowTime
 	kd.UpdatedAt = nowTime
 	kd.Attributes = attrs
-	blck := revchain.Block{}.New(ks, attrs, "", -1)
-	kd.Revision = blck.HashString()
-	kd.store.Save(DOC_DIR + kd.Id, kd)
-	kd.Chain = revchain.Chain{}.New(blck)
-	kd.store.Save(DOC_DIR + kd.Id + ".kek", kd.Chain)
+	if kd.Revisions == nil {
+		rev, revErr := revchain.Chain{}.SetStore(kd.Store()).New(kd.Id, attrs)
+
+		if revErr != nil {
+			return kd, revErr
+		}
+		kd.Rev = rev.GetHashString()
+	} else {
+		rev, revErr := kd.Revisions.New(kd.Id, attrs)
+
+		if revErr != nil {
+			return kd, revErr
+		}
+		kd.Rev = rev.GetHashString()
+	}
 	<- indDone
+
+	kd.Store().Save(DOC_DIR + kd.Id, kd)
 
 	return kd, nil
 }
 
 func (kd Doc) Update(id string, attrs map[string]interface{}, patch bool) (Doc, error) {
 	if kd.store == nil {
-		kd.store = Store{}
+		kd.store = kekstore.Store{}
 	}
 
 	dIndDone := make(chan bool)
 	kd.store.Load(DOC_DIR + id, &kd)
 	kd.UpdatedAt = time.Now()
-	chain := revchain.Chain{}
-	block := revchain.Block{}
-	ks := Kekspace{}
-	kd.store.Load (KEK_SPACE_CONFIG, &ks)
-	kd.store.Load(DOC_DIR + id + ".kek", &chain)
+	var updRev revchain.ChainMaker
+
+	if kd.Revisions == nil {
+		rev, revErr := revchain.Chain{}.Load(kd.Id)
+
+		if revErr != nil {
+			return kd, revErr
+		}
+
+		updRev, _ = rev.AddBlock(kd.Id, attrs)
+		kd.Rev = updRev.GetHashString()
+	} else {
+		rev, revErr := kd.Revisions.Load(kd.Id)
+
+		if revErr != nil {
+			return kd, revErr
+		}
+
+		updRev, _ = rev.AddBlock(kd.Id, attrs)
+		kd.Rev = updRev.GetHashString()
+	}
 
 	go func() {
 		success, _ := kd.removeAttrs()
@@ -135,19 +169,13 @@ func (kd Doc) Update(id string, attrs map[string]interface{}, patch bool) (Doc, 
 		kd.store.Save(DOC_DIR + id, kd)
 	}
 
-	data, _ := json.Marshal(attrs)
-	lastBlock := chain.GetLast()
-	block.New(ks, data, lastBlock.HashString(), lastBlock.Index)
-	chain.AddBlock(block)
-	kd.store.Save(DOC_DIR + id + ".kek", chain)
-
 	return kd, nil
 }
 
 // Delete a kekdoc and its associated indexed attributes & revision chain.
 func (kd Doc) Delete(id string) error {
 	if kd.store == nil {
-		kd.store = Store{}
+		kd.store = kekstore.Store{}
 	}
 	err := kd.store.Load(DOC_DIR + id, &kd)
 	dAttrib := make(chan bool)
@@ -163,7 +191,11 @@ func (kd Doc) Delete(id string) error {
 		dAttrib <- success
 	}()
 	go func() {
-		delRev <- kd.store.Delete(DOC_DIR + id + ".kek")
+		if kd.Revisions == nil {
+			delRev <- revchain.Chain{}.SetStore(kd.Store()).Delete(kd.Id)
+		} else {
+			delRev <- kd.Revisions.Delete(kd.Id)
+		}
 	}()
 	go func() {
 		delRev <- kd.store.Delete(DOC_DIR + id)
@@ -241,14 +273,14 @@ func (kd Doc) indexAttrs (id string, data map[string]interface{}) bool {
 		strVal, isStr := value.(string)
 
 		if isStr {
-			kd.store.Save(FIELD_DIR + field + "/" + strVal + "/" + id, emptyByte)
+			kd.Store().Save(FIELD_DIR + field + "/" + strVal + "/" + id, emptyByte)
 			continue
 		}
 
 		inte, isInt := value.(int)
 
 		if isInt {
-			kd.store.Save(FIELD_DIR + field + "/" + strconv.Itoa(inte) + "/" + id, emptyByte)
+			kd.Store().Save(FIELD_DIR + field + "/" + strconv.Itoa(inte) + "/" + id, emptyByte)
 			continue
 		}
 
@@ -256,7 +288,7 @@ func (kd Doc) indexAttrs (id string, data map[string]interface{}) bool {
 
 		if isStrSlice {
 			for _, val := range strSlice {
-				kd.store.Save(FIELD_DIR + field + "/" + val + "/" + id, emptyByte)
+				kd.Store().Save(FIELD_DIR + field + "/" + val + "/" + id, emptyByte)
 			}
 
 			continue
@@ -276,10 +308,10 @@ func (kd Doc) indexAttrs (id string, data map[string]interface{}) bool {
 	return true
 }
 
-// Find a kekdocument based on a DocQuery. The DocQuery must have a searchQuery as well.
+// Find a kekdocument based on a DocQuery.
 func (kd Doc) Find(q DocQuery) ([]Doc, error) {
-	if kd.store != nil {
-		kd.store = Store{}
+	if kd.store == nil {
+		kd.store = kekstore.Store{}
 	}
 	
 	docIds := make(map[string]int)
@@ -289,19 +321,19 @@ func (kd Doc) Find(q DocQuery) ([]Doc, error) {
 		if limit < 1 {
 			limit = 20
 		}
-		docFiles, _ := kd.store.List(DOC_DIR)
+		docFiles, _ := kd.Store().List(DOC_DIR)
+
 		for docId := range docFiles {
-			if !strings.Contains(docId, ".kek") {
-				docIds[docId] = 1
-			}
+			docIds[docId] = 1
 		}
+
 	} else {
 		docs := make(map[string]bool)
 
 		for ind, queryInfo := range q.SearchQueries {
 			switch queryInfo.Operator {
 			case "=" :
-				docs, _ = kd.store.List(FIELD_DIR + queryInfo.Field + "/" + queryInfo.Value)
+				docs, _ = kd.Store().List(FIELD_DIR + queryInfo.Field + "/" + queryInfo.Value)
 				break
 			}
 
@@ -322,7 +354,7 @@ func (kd Doc) Find(q DocQuery) ([]Doc, error) {
 	queriesLength := len(q.SearchQueries)
 
 	for docId, length := range docIds {
-		kd := Doc{}
+		kd, _ := Doc{}.Get(docId, q.WithDocRevs)
 		if count == limit {
 			break
 		}
@@ -331,7 +363,6 @@ func (kd Doc) Find(q DocQuery) ([]Doc, error) {
 			continue
 		}
 
-		kd.store.Load(DOC_DIR + docId, &kd)
 		sortedDocs = append(sortedDocs, kd)
 		count++
 	}
