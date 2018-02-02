@@ -8,6 +8,7 @@ import (
 	"sort"
 	"github.com/rs/xid"
 	"github.com/MoonBabyLabs/kekstore"
+	"errors"
 )
 
 type SearchQuery struct {
@@ -30,11 +31,18 @@ type DocQuery struct {
 type Doc struct {
 	store	kekstore.Storer
 	Id         string `json:"id"`
+	Name string `json:"name"`
+	KekVersion string `json:"kek_version"`
+	Description string `json:"description"`
+	Schema string `json:"$schema"`
 	Attributes map[string]interface{} `json:"attributes"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	Revisions revchain.ChainMaker `json:"revisions"`
 	Rev string `json:"rev"`
+	RootId string `json:"root_id"`
+	CopyIds map[string]bool `json:"copy_ids"`
+	CollectionIds map[string]bool `json:"collections"`
 }
 
 func (kd Doc) Store() kekstore.Storer {
@@ -45,6 +53,12 @@ func (kd Doc) SetStore(store kekstore.Storer) Doc {
 	kd.store = store
 
 	return kd
+}
+
+func (kd *Doc) SaveCollectionIds() error {
+	err := kd.Store().Save(DOC_DIR + kd.Id, kd)
+
+	return err
 }
 
 func (kd Doc) Get(id string, withRevChain bool) (Doc, error) {
@@ -83,6 +97,14 @@ func (kd Doc) Get(id string, withRevChain bool) (Doc, error) {
 
 // New will create a kekdoc, index the field attributes, map the classes & start the revision chain
 func (kd Doc) New(attrs map[string]interface{}) (Doc, error) {
+
+	if attrs["name"] == "" {
+		return kd, errors.New("kekdoc name must not be empty")
+	}
+
+	kd.Name = attrs["name"].(string)
+	delete(attrs, "name")
+
 	if kd.store == nil {
 		kd.store = kekstore.Store{}
 	}
@@ -120,6 +142,28 @@ func (kd Doc) New(attrs map[string]interface{}) (Doc, error) {
 	return kd, nil
 }
 
+func getMods(oldAttr1, newAttr2 map[string]interface{}) (map[string]interface{}, map[string]interface{}, map[string]interface{}) {
+	added := map[string]interface{}{}
+	modded := map[string]interface{}{}
+	deleted := map[string]interface{}{}
+
+	for k, v := range oldAttr1 {
+		if newAttr2[k] == nil {
+			deleted[k] = true
+		} else if v != newAttr2[k] {
+			modded[k] = newAttr2[k]
+		}
+	}
+
+	for k, v := range newAttr2 {
+		if oldAttr1[k] == nil {
+			added[k] = v
+		}
+	}
+
+	return added, modded, deleted
+}
+
 func (kd Doc) Update(id string, attrs map[string]interface{}, patch bool) (Doc, error) {
 	if kd.store == nil {
 		kd.store = kekstore.Store{}
@@ -129,6 +173,7 @@ func (kd Doc) Update(id string, attrs map[string]interface{}, patch bool) (Doc, 
 	kd.store.Load(DOC_DIR + id, &kd)
 	kd.UpdatedAt = time.Now()
 	var updRev revchain.ChainMaker
+	addMods, modMods, delMods := getMods(kd.Attributes, attrs)
 
 	if kd.Revisions == nil {
 		rev, revErr := revchain.Chain{}.Load(kd.Id)
@@ -137,7 +182,7 @@ func (kd Doc) Update(id string, attrs map[string]interface{}, patch bool) (Doc, 
 			return kd, revErr
 		}
 
-		updRev, _ = rev.AddBlock(kd.Id, attrs)
+		updRev, _ = rev.AddBlock(kd.Id, addMods, modMods, delMods)
 		kd.Rev = updRev.GetHashString()
 	} else {
 		rev, revErr := kd.Revisions.Load(kd.Id)
@@ -146,7 +191,7 @@ func (kd Doc) Update(id string, attrs map[string]interface{}, patch bool) (Doc, 
 			return kd, revErr
 		}
 
-		updRev, _ = rev.AddBlock(kd.Id, attrs)
+		updRev, _ = rev.AddBlock(kd.Id, addMods, modMods, delMods)
 		kd.Rev = updRev.GetHashString()
 	}
 
